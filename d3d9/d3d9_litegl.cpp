@@ -139,12 +139,12 @@ public:
 
     void on_present() {
         m_frames_rendered++;
-        if (m_frames_rendered % 300 == 0) {
+        if (m_frames_rendered % 60 == 0) {
             LARGE_INTEGER now;
             QueryPerformanceCounter(&now);
             double sec = (double)(now.QuadPart - m_last_time.QuadPart) / (double)m_freq.QuadPart;
             if (sec > 0.0) {
-                double fps = 300.0 / sec;
+                double fps = 60.0 / sec;
                 double filter_pct = m_state_requests > 0 ? (100.0 * (double)m_state_filtered / (double)m_state_requests) : 0.0;
                 log_msg("[LiteGL ToGL] FPS: %.1f | State calls: %llu total, %llu bypassed (%.1f%% CPU/driver savings!)\n",
                         fps, (unsigned long long)m_state_requests, (unsigned long long)m_state_filtered, filter_pct);
@@ -358,11 +358,11 @@ public:
     /*** ToGL-Accelerated Shader Constant Management ***/
     STDMETHOD(SetVertexShaderConstantF)(UINT StartRegister, const float* pConstantData, UINT Vector4fCount) {
         m_state_requests++;
-        if (pConstantData && StartRegister + Vector4fCount <= 256) {
+        if (pConstantData && Vector4fCount <= 4 && StartRegister + Vector4fCount <= 256) {
             bool all_match = true;
             for (UINT i = 0; i < Vector4fCount; ++i) {
                 UINT reg = StartRegister + i;
-                if (!m_vs_const_valid[reg] || memcmp(m_vs_const_f[reg], pConstantData + i * 4, 16) != 0) {
+                if (!m_vs_const_valid[reg] || memcmp(m_vs_const_f[reg], pConstantData + (i << 2), 16) != 0) {
                     all_match = false;
                     break;
                 }
@@ -373,8 +373,13 @@ public:
             }
             for (UINT i = 0; i < Vector4fCount; ++i) {
                 UINT reg = StartRegister + i;
-                memcpy(m_vs_const_f[reg], pConstantData + i * 4, 16);
+                memcpy(m_vs_const_f[reg], pConstantData + (i << 2), 16);
                 m_vs_const_valid[reg] = true;
+            }
+        } else if (pConstantData && StartRegister + Vector4fCount <= 256) {
+            // For large bone/matrix arrays, invalidate shadow cache and pass straight to driver without memcmp CPU stall
+            for (UINT i = 0; i < Vector4fCount; ++i) {
+                m_vs_const_valid[StartRegister + i] = false;
             }
         }
         return m_real->SetVertexShaderConstantF(StartRegister, pConstantData, Vector4fCount);
@@ -382,11 +387,11 @@ public:
 
     STDMETHOD(SetPixelShaderConstantF)(UINT StartRegister, const float* pConstantData, UINT Vector4fCount) {
         m_state_requests++;
-        if (pConstantData && StartRegister + Vector4fCount <= 32) {
+        if (pConstantData && Vector4fCount <= 4 && StartRegister + Vector4fCount <= 32) {
             bool all_match = true;
             for (UINT i = 0; i < Vector4fCount; ++i) {
                 UINT reg = StartRegister + i;
-                if (!m_ps_const_valid[reg] || memcmp(m_ps_const_f[reg], pConstantData + i * 4, 16) != 0) {
+                if (!m_ps_const_valid[reg] || memcmp(m_ps_const_f[reg], pConstantData + (i << 2), 16) != 0) {
                     all_match = false;
                     break;
                 }
@@ -397,8 +402,12 @@ public:
             }
             for (UINT i = 0; i < Vector4fCount; ++i) {
                 UINT reg = StartRegister + i;
-                memcpy(m_ps_const_f[reg], pConstantData + i * 4, 16);
+                memcpy(m_ps_const_f[reg], pConstantData + (i << 2), 16);
                 m_ps_const_valid[reg] = true;
+            }
+        } else if (pConstantData && StartRegister + Vector4fCount <= 32) {
+            for (UINT i = 0; i < Vector4fCount; ++i) {
+                m_ps_const_valid[StartRegister + i] = false;
             }
         }
         return m_real->SetPixelShaderConstantF(StartRegister, pConstantData, Vector4fCount);
@@ -718,7 +727,6 @@ public:
             pPresentationParameters->SwapEffect = D3DSWAPEFFECT_DISCARD;
             pPresentationParameters->BackBufferCount = 2;
         }
-        BehaviorFlags &= ~D3DCREATE_MULTITHREADED;
         BehaviorFlags |= D3DCREATE_FPU_PRESERVE;
 
         IDirect3DDevice9* real_device = NULL;
@@ -798,7 +806,6 @@ public:
             pPresentationParameters->SwapEffect = D3DSWAPEFFECT_DISCARD;
             pPresentationParameters->BackBufferCount = 2;
         }
-        BehaviorFlags &= ~D3DCREATE_MULTITHREADED;
         BehaviorFlags |= D3DCREATE_FPU_PRESERVE;
 
         IDirect3DDevice9Ex* real_device_ex = NULL;
@@ -835,7 +842,6 @@ public:
             pPresentationParameters->SwapEffect = D3DSWAPEFFECT_DISCARD;
             pPresentationParameters->BackBufferCount = 2;
         }
-        BehaviorFlags &= ~D3DCREATE_MULTITHREADED;
         BehaviorFlags |= D3DCREATE_FPU_PRESERVE;
 
         IDirect3DDevice9Ex* real_device = NULL;
