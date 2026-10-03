@@ -10,6 +10,10 @@
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic ignored "-Wdelete-non-virtual-dtor"
 #pragma GCC diagnostic ignored "-Wcast-function-type"
+#else
+#ifndef __builtin_expect
+#define __builtin_expect(expr, val) (expr)
+#endif
 #endif
 
 /*
