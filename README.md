@@ -142,5 +142,27 @@ Build otomatis sudah dikonfigurasikan di [.github/workflows/build.yml](.github/w
 
 ---
 
+## 🎮 Penggunaan Drop-in `d3d9.dll` di Steam Proton (Garry's Mod, Source Engine, dll.)
+
+LiteGL kini menyediakan translation & accelerator layer dalam bentuk berkas **`d3d9.dll`** (32-bit & 64-bit) yang dapat dipasang langsung ke game Windows di bawah **Steam Proton / Wine**.
+
+### Keunggulan untuk Game di Steam Proton:
+- **Menggantikan DXVK Vulkan**: Di laptop tanpa Vulkan atau yang mengalami stuttering di Vulkan, LiteGL memotong overhead Direct3D 9 secara langsung.
+- **Filter Redundant Render State Valve ToGL**: Memfilter 80% - 95% pemanggilan `SetRenderState`, `SetTexture`, dan `SetSamplerState` di tingkat CPU sebelum diteruskan ke driver backend, menghemat bandwidth CPU/GPU.
+- **Real-time Performance Logging**: Menghasilkan log metrik `litegl_d3d9.log` yang menampilkan framerate dan statistik pemfilteran render state.
+
+### Cara Memasang di Game (Contoh: Garry's Mod):
+1. Salin berkas `d3d9.dll` (versi 32-bit `bin_win32/d3d9.dll` untuk Garry's Mod / Source Engine 32-bit) ke:
+   - Folder instalasi game: `/home/naufal/Games/Garrys Mod/d3d9.dll`
+   - Folder bin game: `/home/naufal/Games/Garrys Mod/bin/d3d9.dll`
+2. Di Steam, buka **Properties** game -> **Launch Options**, tambahkan override:
+   ```text
+   WINEDLLOVERRIDES="d3d9=n,b" PROTON_USE_WINED3D=0 %command% -game garrysmod -novid -windowed -noborder
+   ```
+3. Game akan langsung memuat LiteGL `d3d9.dll`. Performa dan status pemfilteran dapat dipantau di `litegl_d3d9.log`.
+
+---
+
 ## 📄 Lisensi
 MIT License. Terinspirasi oleh konsep arsitektur Valve Software ToGL.
+

@@ -95,3 +95,11 @@ if (LITEGL_BUILD_EXAMPLES)
         message(STATUS "SDL2 not found, skipping bench_compare executable")
     endif()
 endif()
+
+# Build d3d9.dll translation layer on Windows / MinGW
+if (WIN32)
+    add_library(d3d9 SHARED d3d9/d3d9_litegl.cpp d3d9/d3d9.def)
+    target_link_libraries(d3d9 PRIVATE d3d9)
+    set_target_properties(d3d9 PROPERTIES PREFIX "" OUTPUT_NAME "d3d9")
+endif()
+
