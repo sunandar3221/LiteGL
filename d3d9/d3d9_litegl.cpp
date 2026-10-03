@@ -1,3 +1,4 @@
+#define _CRT_SECURE_NO_WARNINGS
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <initguid.h>
@@ -95,8 +96,8 @@ public:
     InterfaceType* m_real;
     ULONG m_ref;
 
-    /* ToGL-Style Shadow State Caches (Aligned for 64-byte L1 Cacheline) */
-    alignas(64) DWORD m_rs_cache[256];
+    /* ToGL-Style Shadow State Caches */
+    DWORD m_rs_cache[256];
     bool  m_rs_valid[256];
 
     IDirect3DBaseTexture9* m_tex_cache[16];
@@ -694,9 +695,9 @@ public:
     STDMETHOD(SetMaximumFrameLatency)(UINT max_latency) { return this->m_real->SetMaximumFrameLatency(max_latency); }
     STDMETHOD(GetMaximumFrameLatency)(UINT *max_latency) { return this->m_real->GetMaximumFrameLatency(max_latency); }
     STDMETHOD(CheckDeviceState)(HWND dst_window) { return this->m_real->CheckDeviceState(dst_window); }
-    STDMETHOD(CreateRenderTargetEx)(UINT width, UINT height, D3DFORMAT format, D3DMULTISAMPLE_TYPE multisample_type, DWORD multisample_quality, WINBOOL lockable, IDirect3DSurface9 **surface, HANDLE *shared_handle, DWORD usage) { return this->m_real->CreateRenderTargetEx(width, height, format, multisample_type, multisample_quality, lockable, surface, shared_handle, usage); }
+    STDMETHOD(CreateRenderTargetEx)(UINT width, UINT height, D3DFORMAT format, D3DMULTISAMPLE_TYPE multisample_type, DWORD multisample_quality, BOOL lockable, IDirect3DSurface9 **surface, HANDLE *shared_handle, DWORD usage) { return this->m_real->CreateRenderTargetEx(width, height, format, multisample_type, multisample_quality, lockable, surface, shared_handle, usage); }
     STDMETHOD(CreateOffscreenPlainSurfaceEx)(UINT width, UINT Height, D3DFORMAT format, D3DPOOL pool, IDirect3DSurface9 **surface, HANDLE *shared_handle, DWORD usage) { return this->m_real->CreateOffscreenPlainSurfaceEx(width, Height, format, pool, surface, shared_handle, usage); }
-    STDMETHOD(CreateDepthStencilSurfaceEx)(UINT width, UINT height, D3DFORMAT format, D3DMULTISAMPLE_TYPE multisample_type, DWORD multisample_quality, WINBOOL discard, IDirect3DSurface9 **surface, HANDLE *shared_handle, DWORD usage) { return this->m_real->CreateDepthStencilSurfaceEx(width, height, format, multisample_type, multisample_quality, discard, surface, shared_handle, usage); }
+    STDMETHOD(CreateDepthStencilSurfaceEx)(UINT width, UINT height, D3DFORMAT format, D3DMULTISAMPLE_TYPE multisample_type, DWORD multisample_quality, BOOL discard, IDirect3DSurface9 **surface, HANDLE *shared_handle, DWORD usage) { return this->m_real->CreateDepthStencilSurfaceEx(width, height, format, multisample_type, multisample_quality, discard, surface, shared_handle, usage); }
     STDMETHOD(ResetEx)(D3DPRESENT_PARAMETERS *parameters, D3DDISPLAYMODEEX *mode) {
         if (parameters) {
             parameters->PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
