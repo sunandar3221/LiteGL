@@ -32,8 +32,15 @@ static Direct3DCreate9_t g_real_Direct3DCreate9 = NULL;
 static Direct3DCreate9Ex_t g_real_Direct3DCreate9Ex = NULL;
 
 static FILE* g_log_file = NULL;
+static int g_log_checked = 0;
+static bool g_log_frames = false;
 
 static void log_msg(const char* fmt, ...) {
+    if (!g_log_checked) {
+        g_log_checked = 1;
+        const char* env = getenv("LITEGL_LOG");
+        g_log_frames = (env && env[0] != '0');
+    }
     if (!g_log_file) {
         g_log_file = fopen("litegl_d3d9.log", "a");
     }
@@ -44,6 +51,13 @@ static void log_msg(const char* fmt, ...) {
         va_end(args);
         fflush(g_log_file);
     }
+}
+
+static const char* detect_backend(void) {
+    if (GetModuleHandleA("wined3d.dll")) {
+        return "WineD3D (OpenGL Backend)";
+    }
+    return "DXVK / Native D3D9 (Vulkan / Direct3D Backend)";
 }
 
 static bool load_system_d3d9(void) {
@@ -865,18 +879,18 @@ public:
 extern "C" {
 
 __declspec(dllexport) IDirect3D9* WINAPI Direct3DCreate9(UINT SDKVersion) {
-    log_msg("\n===================================================================\n");
-    log_msg(" [LiteGL] Direct3DCreate9 called (SDKVersion: %u)\n", SDKVersion);
-    log_msg(" [LiteGL] Running ToGL-Accelerated D3D9 Layer under Steam Proton\n");
-    log_msg("===================================================================\n");
-
     if (!load_system_d3d9() || !g_real_Direct3DCreate9) {
         return NULL;
     }
 
+    log_msg("\n===================================================================\n");
+    log_msg(" [LiteGL] Direct3DCreate9 called (SDKVersion: %u)\n", SDKVersion);
+    log_msg(" [LiteGL] Active Backend: %s\n", detect_backend());
+    log_msg("===================================================================\n");
+
     IDirect3D9* real_d3d = g_real_Direct3DCreate9(SDKVersion);
     if (!real_d3d) {
-        log_msg("[LiteGL D3D9] Real Direct3DCreate9 returned NULL!\n");
+        log_msg("[LiteGL D3D9] Real Direct3DCreate9 returned NULL! (GetLastError: 0x%08X)\n", (unsigned int)GetLastError());
         return NULL;
     }
 
@@ -884,14 +898,14 @@ __declspec(dllexport) IDirect3D9* WINAPI Direct3DCreate9(UINT SDKVersion) {
 }
 
 __declspec(dllexport) HRESULT WINAPI Direct3DCreate9Ex(UINT SDKVersion, IDirect3D9Ex** ppD3D) {
-    log_msg("\n===================================================================\n");
-    log_msg(" [LiteGL] Direct3DCreate9Ex called (SDKVersion: %u)\n", SDKVersion);
-    log_msg(" [LiteGL] Running ToGL-Accelerated D3D9Ex Layer under Steam Proton\n");
-    log_msg("===================================================================\n");
-
     if (!load_system_d3d9() || !g_real_Direct3DCreate9Ex) {
         return D3DERR_NOTAVAILABLE;
     }
+
+    log_msg("\n===================================================================\n");
+    log_msg(" [LiteGL] Direct3DCreate9Ex called (SDKVersion: %u)\n", SDKVersion);
+    log_msg(" [LiteGL] Active Backend: %s\n", detect_backend());
+    log_msg("===================================================================\n");
 
     IDirect3D9Ex* real_d3d = NULL;
     HRESULT hr = g_real_Direct3DCreate9Ex(SDKVersion, &real_d3d);
