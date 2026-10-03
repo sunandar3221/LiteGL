@@ -83,6 +83,9 @@ static bool load_system_d3d9(void) {
     return false;
 }
 
+#define LITEGL_COUNT_REQUEST() do { if (__builtin_expect(g_log_frames, 0)) m_state_requests++; } while(0)
+#define LITEGL_COUNT_FILTERED() do { if (__builtin_expect(g_log_frames, 0)) m_state_filtered++; } while(0)
+
 /* -------------------------------------------------------------------------
  * Template Device Implementation with Valve ToGL Shadow State Engine
  * ------------------------------------------------------------------------- */
@@ -92,8 +95,8 @@ public:
     InterfaceType* m_real;
     ULONG m_ref;
 
-    /* ToGL-Style Shadow State Caches */
-    DWORD m_rs_cache[256];
+    /* ToGL-Style Shadow State Caches (Aligned for 64-byte L1 Cacheline) */
+    alignas(64) DWORD m_rs_cache[256];
     bool  m_rs_valid[256];
 
     IDirect3DBaseTexture9* m_tex_cache[16];
@@ -125,6 +128,14 @@ public:
     D3DVIEWPORT9 m_viewport_cache;
     bool  m_viewport_valid;
 
+    /* Extended Caches (Transforms, Material, Clip Planes) */
+    D3DMATRIX m_transform_cache[4]; /* 0: WORLD, 1: none, 2: VIEW, 3: PROJECTION */
+    bool      m_transform_valid[4];
+    D3DMATERIAL9 m_material_cache;
+    bool         m_material_valid;
+    float m_clip_plane_cache[6][4];
+    bool  m_clip_plane_valid[6];
+
     /* Metrics & Diagnostics */
     uint64_t m_state_requests;
     uint64_t m_state_filtered;
@@ -149,9 +160,15 @@ public:
         memset(m_ps_const_valid, 0, sizeof(m_ps_const_valid));
         m_scissor_valid = false;
         m_viewport_valid = false;
+        memset(m_transform_valid, 0, sizeof(m_transform_valid));
+        m_material_valid = false;
+        memset(m_clip_plane_valid, 0, sizeof(m_clip_plane_valid));
     }
 
     void on_present() {
+        if (__builtin_expect(!g_log_frames, 1)) {
+            return; /* Zero overhead when logging is not active! */
+        }
         m_frames_rendered++;
         if (m_frames_rendered % 60 == 0) {
             LARGE_INTEGER now;
@@ -192,10 +209,10 @@ public:
 
     /*** ToGL-Accelerated Render State Management ***/
     STDMETHOD(SetRenderState)(D3DRENDERSTATETYPE State, DWORD Value) {
-        m_state_requests++;
-        if (State < 256) {
-            if (m_rs_valid[State] && m_rs_cache[State] == Value) {
-                m_state_filtered++;
+        LITEGL_COUNT_REQUEST();
+        if (__builtin_expect((UINT)State < 256, 1)) {
+            if (__builtin_expect(m_rs_valid[State] && m_rs_cache[State] == Value, 1)) {
+                LITEGL_COUNT_FILTERED();
                 return D3D_OK; /* Bypassed by LiteGL Shadow Cache! */
             }
             m_rs_valid[State] = true;
@@ -214,10 +231,10 @@ public:
 
     /*** ToGL-Accelerated Texture & Sampler State Management ***/
     STDMETHOD(SetTexture)(DWORD Stage, IDirect3DBaseTexture9* pTexture) {
-        m_state_requests++;
-        if (Stage < 16) {
-            if (m_tex_cache[Stage] == pTexture) {
-                m_state_filtered++;
+        LITEGL_COUNT_REQUEST();
+        if (__builtin_expect(Stage < 16, 1)) {
+            if (__builtin_expect(m_tex_cache[Stage] == pTexture, 1)) {
+                LITEGL_COUNT_FILTERED();
                 return D3D_OK;
             }
             m_tex_cache[Stage] = pTexture;
@@ -230,10 +247,10 @@ public:
     }
 
     STDMETHOD(SetSamplerState)(DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD Value) {
-        m_state_requests++;
-        if (Sampler < 16 && Type < 16) {
-            if (m_sampler_valid[Sampler][Type] && m_sampler_cache[Sampler][Type] == Value) {
-                m_state_filtered++;
+        LITEGL_COUNT_REQUEST();
+        if (__builtin_expect(Sampler < 16 && (UINT)Type < 16, 1)) {
+            if (__builtin_expect(m_sampler_valid[Sampler][Type] && m_sampler_cache[Sampler][Type] == Value, 1)) {
+                LITEGL_COUNT_FILTERED();
                 return D3D_OK;
             }
             m_sampler_valid[Sampler][Type] = true;
@@ -251,10 +268,10 @@ public:
     }
 
     STDMETHOD(SetTextureStageState)(DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, DWORD Value) {
-        m_state_requests++;
-        if (Stage < 8 && Type < 32) {
-            if (m_tss_valid[Stage][Type] && m_tss_cache[Stage][Type] == Value) {
-                m_state_filtered++;
+        LITEGL_COUNT_REQUEST();
+        if (__builtin_expect(Stage < 8 && (UINT)Type < 32, 1)) {
+            if (__builtin_expect(m_tss_valid[Stage][Type] && m_tss_cache[Stage][Type] == Value, 1)) {
+                LITEGL_COUNT_FILTERED();
                 return D3D_OK;
             }
             m_tss_valid[Stage][Type] = true;
@@ -544,16 +561,55 @@ public:
     STDMETHOD(SetDepthStencilSurface)(IDirect3DSurface9* pNewZStencil) { return m_real->SetDepthStencilSurface(pNewZStencil); }
     STDMETHOD(GetDepthStencilSurface)(IDirect3DSurface9** ppZStencilSurface) { return m_real->GetDepthStencilSurface(ppZStencilSurface); }
     STDMETHOD(Clear)(DWORD Count, const D3DRECT* pRects, DWORD Flags, D3DCOLOR Color, float Z, DWORD Stencil) { return m_real->Clear(Count, pRects, Flags, Color, Z, Stencil); }
-    STDMETHOD(SetTransform)(D3DTRANSFORMSTATETYPE State, const D3DMATRIX* pMatrix) { return m_real->SetTransform(State, pMatrix); }
+    STDMETHOD(SetTransform)(D3DTRANSFORMSTATETYPE State, const D3DMATRIX* pMatrix) {
+        LITEGL_COUNT_REQUEST();
+        if (pMatrix) {
+            UINT idx = (State == D3DTS_WORLD) ? 0 : ((UINT)State <= 3 ? (UINT)State : 255);
+            if (idx < 4) {
+                if (__builtin_expect(m_transform_valid[idx] && memcmp(&m_transform_cache[idx], pMatrix, sizeof(D3DMATRIX)) == 0, 1)) {
+                    LITEGL_COUNT_FILTERED();
+                    return D3D_OK;
+                }
+                m_transform_cache[idx] = *pMatrix;
+                m_transform_valid[idx] = true;
+            }
+        }
+        return m_real->SetTransform(State, pMatrix);
+    }
     STDMETHOD(GetTransform)(D3DTRANSFORMSTATETYPE State, D3DMATRIX* pMatrix) { return m_real->GetTransform(State, pMatrix); }
-    STDMETHOD(MultiplyTransform)(D3DTRANSFORMSTATETYPE State, const D3DMATRIX* pMatrix) { return m_real->MultiplyTransform(State, pMatrix); }
-    STDMETHOD(SetMaterial)(const D3DMATERIAL9* pMaterial) { return m_real->SetMaterial(pMaterial); }
+    STDMETHOD(MultiplyTransform)(D3DTRANSFORMSTATETYPE State, const D3DMATRIX* pMatrix) {
+        m_transform_valid[0] = false;
+        return m_real->MultiplyTransform(State, pMatrix);
+    }
+    STDMETHOD(SetMaterial)(const D3DMATERIAL9* pMaterial) {
+        LITEGL_COUNT_REQUEST();
+        if (pMaterial) {
+            if (__builtin_expect(m_material_valid && memcmp(&m_material_cache, pMaterial, sizeof(D3DMATERIAL9)) == 0, 1)) {
+                LITEGL_COUNT_FILTERED();
+                return D3D_OK;
+            }
+            m_material_cache = *pMaterial;
+            m_material_valid = true;
+        }
+        return m_real->SetMaterial(pMaterial);
+    }
     STDMETHOD(GetMaterial)(D3DMATERIAL9* pMaterial) { return m_real->GetMaterial(pMaterial); }
     STDMETHOD(SetLight)(DWORD Index, const D3DLIGHT9* pLight) { return m_real->SetLight(Index, pLight); }
     STDMETHOD(GetLight)(DWORD Index, D3DLIGHT9* pLight) { return m_real->GetLight(Index, pLight); }
     STDMETHOD(LightEnable)(DWORD Index, BOOL Enable) { return m_real->LightEnable(Index, Enable); }
     STDMETHOD(GetLightEnable)(DWORD Index, BOOL* pEnable) { return m_real->GetLightEnable(Index, pEnable); }
-    STDMETHOD(SetClipPlane)(DWORD Index, const float* pPlane) { return m_real->SetClipPlane(Index, pPlane); }
+    STDMETHOD(SetClipPlane)(DWORD Index, const float* pPlane) {
+        LITEGL_COUNT_REQUEST();
+        if (pPlane && Index < 6) {
+            if (__builtin_expect(m_clip_plane_valid[Index] && memcmp(m_clip_plane_cache[Index], pPlane, sizeof(float) * 4) == 0, 1)) {
+                LITEGL_COUNT_FILTERED();
+                return D3D_OK;
+            }
+            memcpy(m_clip_plane_cache[Index], pPlane, sizeof(float) * 4);
+            m_clip_plane_valid[Index] = true;
+        }
+        return m_real->SetClipPlane(Index, pPlane);
+    }
     STDMETHOD(GetClipPlane)(DWORD Index, float* pPlane) { return m_real->GetClipPlane(Index, pPlane); }
     STDMETHOD(SetClipStatus)(const D3DCLIPSTATUS9* pClipStatus) { return m_real->SetClipStatus(pClipStatus); }
     STDMETHOD(GetClipStatus)(D3DCLIPSTATUS9* pClipStatus) { return m_real->GetClipStatus(pClipStatus); }
