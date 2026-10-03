@@ -52,6 +52,9 @@ jobs:
   build-windows:
     name: Windows - MSVC
     runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
     strategy:
       matrix:
         build_type: [Release]
