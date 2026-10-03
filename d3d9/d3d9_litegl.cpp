@@ -19,7 +19,9 @@
  * - Redundant SetTexture, SetSamplerState & SetTextureStageState are eliminated
  * - Redundant SetVertexShader, SetPixelShader, SetVertexDeclaration & SetFVF bypassed
  * - Redundant SetStreamSource & SetIndices bypassed
+ * - Redundant SetVertexShaderConstantF & SetPixelShaderConstantF bypassed
  * - Fast-path zero-stall presentation for low-end iGPUs (Intel UHD 600)
+ * - Auto-optimized swapchain, zero mutex contention, frame latency = 1
  */
 
 static HMODULE g_real_d3d9_module = NULL;
@@ -97,6 +99,17 @@ public:
     UINT m_stream_stride[16];
     IDirect3DIndexBuffer9*  m_ib_cache;
 
+    /* Shader Constants Shadow Cache (ToGL Architecture) */
+    float m_vs_const_f[256][4];
+    bool  m_vs_const_valid[256];
+    float m_ps_const_f[32][4];
+    bool  m_ps_const_valid[32];
+
+    RECT  m_scissor_cache;
+    bool  m_scissor_valid;
+    D3DVIEWPORT9 m_viewport_cache;
+    bool  m_viewport_valid;
+
     /* Metrics & Diagnostics */
     uint64_t m_state_requests;
     uint64_t m_state_filtered;
@@ -117,6 +130,10 @@ public:
         memset(m_stream_offset, 0, sizeof(m_stream_offset));
         memset(m_stream_stride, 0, sizeof(m_stream_stride));
         m_ib_cache = NULL;
+        memset(m_vs_const_valid, 0, sizeof(m_vs_const_valid));
+        memset(m_ps_const_valid, 0, sizeof(m_ps_const_valid));
+        m_scissor_valid = false;
+        m_viewport_valid = false;
     }
 
     void on_present() {
@@ -128,7 +145,7 @@ public:
             if (sec > 0.0) {
                 double fps = 300.0 / sec;
                 double filter_pct = m_state_requests > 0 ? (100.0 * (double)m_state_filtered / (double)m_state_requests) : 0.0;
-                log_msg("[LiteGL ToGL] FPS: %.1f | State calls: %llu total, %llu bypassed (%.1f%% driver calls saved!)\n",
+                log_msg("[LiteGL ToGL] FPS: %.1f | State calls: %llu total, %llu bypassed (%.1f%% CPU/driver savings!)\n",
                         fps, (unsigned long long)m_state_requests, (unsigned long long)m_state_filtered, filter_pct);
             }
             m_last_time = now;
@@ -188,16 +205,12 @@ public:
         m_state_requests++;
         if (Stage < 16) {
             if (m_tex_cache[Stage] == pTexture) {
-                m_texture_filtered_bump();
+                m_state_filtered++;
                 return D3D_OK;
             }
             m_tex_cache[Stage] = pTexture;
         }
         return m_real->SetTexture(Stage, pTexture);
-    }
-
-    void m_texture_filtered_bump() {
-        m_state_filtered++;
     }
 
     STDMETHOD(GetTexture)(DWORD Stage, IDirect3DBaseTexture9** ppTexture) {
@@ -344,6 +357,98 @@ public:
         return m_real->GetIndices(ppIndexData);
     }
 
+    /*** ToGL-Accelerated Shader Constant Management ***/
+    STDMETHOD(SetVertexShaderConstantF)(UINT StartRegister, const float* pConstantData, UINT Vector4fCount) {
+        m_state_requests++;
+        if (pConstantData && StartRegister + Vector4fCount <= 256) {
+            bool all_match = true;
+            for (UINT i = 0; i < Vector4fCount; ++i) {
+                UINT reg = StartRegister + i;
+                if (!m_vs_const_valid[reg] || memcmp(m_vs_const_f[reg], pConstantData + i * 4, 16) != 0) {
+                    all_match = false;
+                    break;
+                }
+            }
+            if (all_match) {
+                m_state_filtered++;
+                return D3D_OK; /* Bypassed redundant vertex constant upload */
+            }
+            for (UINT i = 0; i < Vector4fCount; ++i) {
+                UINT reg = StartRegister + i;
+                memcpy(m_vs_const_f[reg], pConstantData + i * 4, 16);
+                m_vs_const_valid[reg] = true;
+            }
+        }
+        return m_real->SetVertexShaderConstantF(StartRegister, pConstantData, Vector4fCount);
+    }
+
+    STDMETHOD(SetPixelShaderConstantF)(UINT StartRegister, const float* pConstantData, UINT Vector4fCount) {
+        m_state_requests++;
+        if (pConstantData && StartRegister + Vector4fCount <= 32) {
+            bool all_match = true;
+            for (UINT i = 0; i < Vector4fCount; ++i) {
+                UINT reg = StartRegister + i;
+                if (!m_ps_const_valid[reg] || memcmp(m_ps_const_f[reg], pConstantData + i * 4, 16) != 0) {
+                    all_match = false;
+                    break;
+                }
+            }
+            if (all_match) {
+                m_state_filtered++;
+                return D3D_OK; /* Bypassed redundant pixel constant upload */
+            }
+            for (UINT i = 0; i < Vector4fCount; ++i) {
+                UINT reg = StartRegister + i;
+                memcpy(m_ps_const_f[reg], pConstantData + i * 4, 16);
+                m_ps_const_valid[reg] = true;
+            }
+        }
+        return m_real->SetPixelShaderConstantF(StartRegister, pConstantData, Vector4fCount);
+    }
+
+    /*** Viewport & Scissor Caching ***/
+    STDMETHOD(SetScissorRect)(const RECT* pRect) {
+        m_state_requests++;
+        if (pRect) {
+            if (m_scissor_valid && memcmp(&m_scissor_cache, pRect, sizeof(RECT)) == 0) {
+                m_state_filtered++;
+                return D3D_OK;
+            }
+            m_scissor_cache = *pRect;
+            m_scissor_valid = true;
+        }
+        return m_real->SetScissorRect(pRect);
+    }
+
+    STDMETHOD(GetScissorRect)(RECT* pRect) {
+        if (m_scissor_valid && pRect) {
+            *pRect = m_scissor_cache;
+            return D3D_OK;
+        }
+        return m_real->GetScissorRect(pRect);
+    }
+
+    STDMETHOD(SetViewport)(const D3DVIEWPORT9* pViewport) {
+        m_state_requests++;
+        if (pViewport) {
+            if (m_viewport_valid && memcmp(&m_viewport_cache, pViewport, sizeof(D3DVIEWPORT9)) == 0) {
+                m_state_filtered++;
+                return D3D_OK;
+            }
+            m_viewport_cache = *pViewport;
+            m_viewport_valid = true;
+        }
+        return m_real->SetViewport(pViewport);
+    }
+
+    STDMETHOD(GetViewport)(D3DVIEWPORT9* pViewport) {
+        if (m_viewport_valid && pViewport) {
+            *pViewport = m_viewport_cache;
+            return D3D_OK;
+        }
+        return m_real->GetViewport(pViewport);
+    }
+
     /*** Scene & Presentation ***/
     STDMETHOD(BeginScene)(void) {
         return m_real->BeginScene();
@@ -359,6 +464,11 @@ public:
     }
 
     STDMETHOD(Reset)(D3DPRESENT_PARAMETERS* pPresentationParameters) {
+        if (pPresentationParameters) {
+            pPresentationParameters->PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
+            pPresentationParameters->SwapEffect = D3DSWAPEFFECT_DISCARD;
+            pPresentationParameters->BackBufferCount = 2;
+        }
         invalidate_cache();
         return m_real->Reset(pPresentationParameters);
     }
@@ -416,8 +526,6 @@ public:
     STDMETHOD(SetTransform)(D3DTRANSFORMSTATETYPE State, const D3DMATRIX* pMatrix) { return m_real->SetTransform(State, pMatrix); }
     STDMETHOD(GetTransform)(D3DTRANSFORMSTATETYPE State, D3DMATRIX* pMatrix) { return m_real->GetTransform(State, pMatrix); }
     STDMETHOD(MultiplyTransform)(D3DTRANSFORMSTATETYPE State, const D3DMATRIX* pMatrix) { return m_real->MultiplyTransform(State, pMatrix); }
-    STDMETHOD(SetViewport)(const D3DVIEWPORT9* pViewport) { return m_real->SetViewport(pViewport); }
-    STDMETHOD(GetViewport)(D3DVIEWPORT9* pViewport) { return m_real->GetViewport(pViewport); }
     STDMETHOD(SetMaterial)(const D3DMATERIAL9* pMaterial) { return m_real->SetMaterial(pMaterial); }
     STDMETHOD(GetMaterial)(D3DMATERIAL9* pMaterial) { return m_real->GetMaterial(pMaterial); }
     STDMETHOD(SetLight)(DWORD Index, const D3DLIGHT9* pLight) { return m_real->SetLight(Index, pLight); }
@@ -433,8 +541,6 @@ public:
     STDMETHOD(GetPaletteEntries)(UINT PaletteNumber, PALETTEENTRY* pEntries) { return m_real->GetPaletteEntries(PaletteNumber, pEntries); }
     STDMETHOD(SetCurrentTexturePalette)(UINT PaletteNumber) { return m_real->SetCurrentTexturePalette(PaletteNumber); }
     STDMETHOD(GetCurrentTexturePalette)(UINT *PaletteNumber) { return m_real->GetCurrentTexturePalette(PaletteNumber); }
-    STDMETHOD(SetScissorRect)(const RECT* pRect) { return m_real->SetScissorRect(pRect); }
-    STDMETHOD(GetScissorRect)(RECT* pRect) { return m_real->GetScissorRect(pRect); }
     STDMETHOD(SetSoftwareVertexProcessing)(BOOL bSoftware) { return m_real->SetSoftwareVertexProcessing(bSoftware); }
     STDMETHOD_(BOOL, GetSoftwareVertexProcessing)(void) { return m_real->GetSoftwareVertexProcessing(); }
     STDMETHOD(SetNPatchMode)(float nSegments) { return m_real->SetNPatchMode(nSegments); }
@@ -446,7 +552,6 @@ public:
     STDMETHOD(ProcessVertices)(UINT SrcStartIndex, UINT DestIndex, UINT VertexCount, IDirect3DVertexBuffer9* pDestBuffer, IDirect3DVertexDeclaration9* pVertexDeclaration, DWORD Flags) { return m_real->ProcessVertices(SrcStartIndex, DestIndex, VertexCount, pDestBuffer, pVertexDeclaration, Flags); }
     STDMETHOD(CreateVertexDeclaration)(const D3DVERTEXELEMENT9* pVertexElements, IDirect3DVertexDeclaration9** ppDecl) { return m_real->CreateVertexDeclaration(pVertexElements, ppDecl); }
     STDMETHOD(CreateVertexShader)(const DWORD* pFunction, IDirect3DVertexShader9** ppShader) { return m_real->CreateVertexShader(pFunction, ppShader); }
-    STDMETHOD(SetVertexShaderConstantF)(UINT StartRegister, const float* pConstantData, UINT Vector4fCount) { return m_real->SetVertexShaderConstantF(StartRegister, pConstantData, Vector4fCount); }
     STDMETHOD(GetVertexShaderConstantF)(UINT StartRegister, float* pConstantData, UINT Vector4fCount) { return m_real->GetVertexShaderConstantF(StartRegister, pConstantData, Vector4fCount); }
     STDMETHOD(SetVertexShaderConstantI)(UINT StartRegister, const int* pConstantData, UINT Vector4iCount) { return m_real->SetVertexShaderConstantI(StartRegister, pConstantData, Vector4iCount); }
     STDMETHOD(GetVertexShaderConstantI)(UINT StartRegister, int* pConstantData, UINT Vector4iCount) { return m_real->GetVertexShaderConstantI(StartRegister, pConstantData, Vector4iCount); }
@@ -455,7 +560,6 @@ public:
     STDMETHOD(SetStreamSourceFreq)(UINT StreamNumber, UINT Setting) { return m_real->SetStreamSourceFreq(StreamNumber, Setting); }
     STDMETHOD(GetStreamSourceFreq)(UINT StreamNumber, UINT* pSetting) { return m_real->GetStreamSourceFreq(StreamNumber, pSetting); }
     STDMETHOD(CreatePixelShader)(const DWORD* pFunction, IDirect3DPixelShader9** ppShader) { return m_real->CreatePixelShader(pFunction, ppShader); }
-    STDMETHOD(SetPixelShaderConstantF)(UINT StartRegister, const float* pConstantData, UINT Vector4fCount) { return m_real->SetPixelShaderConstantF(StartRegister, pConstantData, Vector4fCount); }
     STDMETHOD(GetPixelShaderConstantF)(UINT StartRegister, float* pConstantData, UINT Vector4fCount) { return m_real->GetPixelShaderConstantF(StartRegister, pConstantData, Vector4fCount); }
     STDMETHOD(SetPixelShaderConstantI)(UINT StartRegister, const int* pConstantData, UINT Vector4iCount) { return m_real->SetPixelShaderConstantI(StartRegister, pConstantData, Vector4iCount); }
     STDMETHOD(GetPixelShaderConstantI)(UINT StartRegister, int* pConstantData, UINT Vector4iCount) { return m_real->GetPixelShaderConstantI(StartRegister, pConstantData, Vector4iCount); }
@@ -483,27 +587,37 @@ public:
     }
 
     /*** IDirect3DDevice9Ex specific methods ***/
-    STDMETHOD(SetConvolutionMonoKernel)(UINT width, UINT height, float *rows, float *columns) { return m_real->SetConvolutionMonoKernel(width, height, rows, columns); }
-    STDMETHOD(ComposeRects)(IDirect3DSurface9 *src_surface, IDirect3DSurface9 *dst_surface, IDirect3DVertexBuffer9 *src_descs, UINT rect_count, IDirect3DVertexBuffer9 *dst_descs, D3DCOMPOSERECTSOP operation, INT offset_x, INT offset_y) { return m_real->ComposeRects(src_surface, dst_surface, src_descs, rect_count, dst_descs, operation, offset_x, offset_y); }
+    STDMETHOD(SetConvolutionMonoKernel)(UINT width, UINT height, float *rows, float *columns) { return this->m_real->SetConvolutionMonoKernel(width, height, rows, columns); }
+    STDMETHOD(ComposeRects)(IDirect3DSurface9 *src_surface, IDirect3DSurface9 *dst_surface, IDirect3DVertexBuffer9 *src_descs, UINT rect_count, IDirect3DVertexBuffer9 *dst_descs, D3DCOMPOSERECTSOP operation, INT offset_x, INT offset_y) { return this->m_real->ComposeRects(src_surface, dst_surface, src_descs, rect_count, dst_descs, operation, offset_x, offset_y); }
     STDMETHOD(PresentEx)(const RECT *src_rect, const RECT *dst_rect, HWND dst_window_override, const RGNDATA *dirty_region, DWORD flags) {
-        on_present();
-        return m_real->PresentEx(src_rect, dst_rect, dst_window_override, dirty_region, flags);
+        this->on_present();
+        return this->m_real->PresentEx(src_rect, dst_rect, dst_window_override, dirty_region, flags);
     }
-    STDMETHOD(GetGPUThreadPriority)(INT *priority) { return m_real->GetGPUThreadPriority(priority); }
-    STDMETHOD(SetGPUThreadPriority)(INT priority) { return m_real->SetGPUThreadPriority(priority); }
-    STDMETHOD(WaitForVBlank)(UINT swapchain_idx) { return m_real->WaitForVBlank(swapchain_idx); }
-    STDMETHOD(CheckResourceResidency)(IDirect3DResource9 **resources, UINT32 resource_count) { return m_real->CheckResourceResidency(resources, resource_count); }
-    STDMETHOD(SetMaximumFrameLatency)(UINT max_latency) { return m_real->SetMaximumFrameLatency(max_latency); }
-    STDMETHOD(GetMaximumFrameLatency)(UINT *max_latency) { return m_real->GetMaximumFrameLatency(max_latency); }
-    STDMETHOD(CheckDeviceState)(HWND dst_window) { return m_real->CheckDeviceState(dst_window); }
-    STDMETHOD(CreateRenderTargetEx)(UINT width, UINT height, D3DFORMAT format, D3DMULTISAMPLE_TYPE multisample_type, DWORD multisample_quality, WINBOOL lockable, IDirect3DSurface9 **surface, HANDLE *shared_handle, DWORD usage) { return m_real->CreateRenderTargetEx(width, height, format, multisample_type, multisample_quality, lockable, surface, shared_handle, usage); }
-    STDMETHOD(CreateOffscreenPlainSurfaceEx)(UINT width, UINT Height, D3DFORMAT format, D3DPOOL pool, IDirect3DSurface9 **surface, HANDLE *shared_handle, DWORD usage) { return m_real->CreateOffscreenPlainSurfaceEx(width, Height, format, pool, surface, shared_handle, usage); }
-    STDMETHOD(CreateDepthStencilSurfaceEx)(UINT width, UINT height, D3DFORMAT format, D3DMULTISAMPLE_TYPE multisample_type, DWORD multisample_quality, WINBOOL discard, IDirect3DSurface9 **surface, HANDLE *shared_handle, DWORD usage) { return m_real->CreateDepthStencilSurfaceEx(width, height, format, multisample_type, multisample_quality, discard, surface, shared_handle, usage); }
+    STDMETHOD(GetGPUThreadPriority)(INT *priority) { return this->m_real->GetGPUThreadPriority(priority); }
+    STDMETHOD(SetGPUThreadPriority)(INT priority) { return this->m_real->SetGPUThreadPriority(priority); }
+    STDMETHOD(WaitForVBlank)(UINT swapchain_idx) { return this->m_real->WaitForVBlank(swapchain_idx); }
+    STDMETHOD(CheckResourceResidency)(IDirect3DResource9 **resources, UINT32 resource_count) { return this->m_real->CheckResourceResidency(resources, resource_count); }
+    STDMETHOD(SetMaximumFrameLatency)(UINT max_latency) { return this->m_real->SetMaximumFrameLatency(max_latency); }
+    STDMETHOD(GetMaximumFrameLatency)(UINT *max_latency) { return this->m_real->GetMaximumFrameLatency(max_latency); }
+    STDMETHOD(CheckDeviceState)(HWND dst_window) { return this->m_real->CheckDeviceState(dst_window); }
+    STDMETHOD(CreateRenderTargetEx)(UINT width, UINT height, D3DFORMAT format, D3DMULTISAMPLE_TYPE multisample_type, DWORD multisample_quality, WINBOOL lockable, IDirect3DSurface9 **surface, HANDLE *shared_handle, DWORD usage) { return this->m_real->CreateRenderTargetEx(width, height, format, multisample_type, multisample_quality, lockable, surface, shared_handle, usage); }
+    STDMETHOD(CreateOffscreenPlainSurfaceEx)(UINT width, UINT Height, D3DFORMAT format, D3DPOOL pool, IDirect3DSurface9 **surface, HANDLE *shared_handle, DWORD usage) { return this->m_real->CreateOffscreenPlainSurfaceEx(width, Height, format, pool, surface, shared_handle, usage); }
+    STDMETHOD(CreateDepthStencilSurfaceEx)(UINT width, UINT height, D3DFORMAT format, D3DMULTISAMPLE_TYPE multisample_type, DWORD multisample_quality, WINBOOL discard, IDirect3DSurface9 **surface, HANDLE *shared_handle, DWORD usage) { return this->m_real->CreateDepthStencilSurfaceEx(width, height, format, multisample_type, multisample_quality, discard, surface, shared_handle, usage); }
     STDMETHOD(ResetEx)(D3DPRESENT_PARAMETERS *parameters, D3DDISPLAYMODEEX *mode) {
-        invalidate_cache();
-        return m_real->ResetEx(parameters, mode);
+        if (parameters) {
+            parameters->PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
+            parameters->SwapEffect = D3DSWAPEFFECT_DISCARD;
+            parameters->BackBufferCount = 2;
+        }
+        this->invalidate_cache();
+        HRESULT hr = this->m_real->ResetEx(parameters, mode);
+        if (SUCCEEDED(hr)) {
+            this->m_real->SetMaximumFrameLatency(1);
+        }
+        return hr;
     }
-    STDMETHOD(GetDisplayModeEx)(UINT swapchain_idx, D3DDISPLAYMODEEX *mode, D3DDISPLAYROTATION *rotation) { return m_real->GetDisplayModeEx(swapchain_idx, mode, rotation); }
+    STDMETHOD(GetDisplayModeEx)(UINT swapchain_idx, D3DDISPLAYMODEEX *mode, D3DDISPLAYROTATION *rotation) { return this->m_real->GetDisplayModeEx(swapchain_idx, mode, rotation); }
+
 };
 
 /* -------------------------------------------------------------------------
@@ -552,6 +666,14 @@ public:
 
     STDMETHOD(CreateDevice)(UINT Adapter, D3DDEVTYPE DeviceType, HWND hFocusWindow, DWORD BehaviorFlags, D3DPRESENT_PARAMETERS* pPresentationParameters, IDirect3DDevice9** ppReturnedDeviceInterface) {
         log_msg("[LiteGL D3D9] Creating device (Adapter: %u, FocusWindow: %p)...\n", Adapter, hFocusWindow);
+
+        if (pPresentationParameters) {
+            pPresentationParameters->PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
+            pPresentationParameters->SwapEffect = D3DSWAPEFFECT_DISCARD;
+            pPresentationParameters->BackBufferCount = 2;
+        }
+        BehaviorFlags &= ~D3DCREATE_MULTITHREADED;
+        BehaviorFlags |= D3DCREATE_FPU_PRESERVE;
 
         IDirect3DDevice9* real_device = NULL;
         HRESULT hr = m_real->CreateDevice(Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters, &real_device);
@@ -615,6 +737,14 @@ public:
     STDMETHOD(CreateDevice)(UINT Adapter, D3DDEVTYPE DeviceType, HWND hFocusWindow, DWORD BehaviorFlags, D3DPRESENT_PARAMETERS* pPresentationParameters, IDirect3DDevice9** ppReturnedDeviceInterface) {
         log_msg("[LiteGL D3D9Ex] CreateDevice called (Adapter: %u, FocusWindow: %p)...\n", Adapter, hFocusWindow);
 
+        if (pPresentationParameters) {
+            pPresentationParameters->PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
+            pPresentationParameters->SwapEffect = D3DSWAPEFFECT_DISCARD;
+            pPresentationParameters->BackBufferCount = 2;
+        }
+        BehaviorFlags &= ~D3DCREATE_MULTITHREADED;
+        BehaviorFlags |= D3DCREATE_FPU_PRESERVE;
+
         IDirect3DDevice9* real_device = NULL;
         HRESULT hr = m_realEx->CreateDevice(Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters, &real_device);
         if (FAILED(hr) || !real_device) {
@@ -634,6 +764,14 @@ public:
     STDMETHOD(CreateDeviceEx)(UINT Adapter, D3DDEVTYPE DeviceType, HWND hFocusWindow, DWORD BehaviorFlags, D3DPRESENT_PARAMETERS* pPresentationParameters, D3DDISPLAYMODEEX* pFullscreenDisplayMode, IDirect3DDevice9Ex** ppReturnedDeviceInterface) {
         log_msg("[LiteGL D3D9Ex] CreateDeviceEx called (Adapter: %u, FocusWindow: %p)...\n", Adapter, hFocusWindow);
 
+        if (pPresentationParameters) {
+            pPresentationParameters->PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
+            pPresentationParameters->SwapEffect = D3DSWAPEFFECT_DISCARD;
+            pPresentationParameters->BackBufferCount = 2;
+        }
+        BehaviorFlags &= ~D3DCREATE_MULTITHREADED;
+        BehaviorFlags |= D3DCREATE_FPU_PRESERVE;
+
         IDirect3DDevice9Ex* real_device = NULL;
         HRESULT hr = m_realEx->CreateDeviceEx(Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters, pFullscreenDisplayMode, &real_device);
         if (FAILED(hr) || !real_device) {
@@ -641,6 +779,7 @@ public:
             return hr;
         }
 
+        real_device->SetMaximumFrameLatency(1);
         *ppReturnedDeviceInterface = new LiteGL_Direct3DDevice9Ex(real_device);
         log_msg("[LiteGL D3D9Ex] Wrapped IDirect3DDevice9Ex successfully with LiteGL ToGL Accelerator!\n");
         return D3D_OK;
