@@ -1,5 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <initguid.h>
 #include <d3d9.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -163,9 +164,6 @@ public:
     }
 
     /*** IUnknown methods ***/
-    STDMETHOD(QueryInterface)(REFIID riid, void** ppvObj) {
-        return m_real->QueryInterface(riid, ppvObj);
-    }
     STDMETHOD_(ULONG,AddRef)(void) {
         return InterlockedIncrement(&m_ref);
     }
@@ -571,12 +569,17 @@ public:
     STDMETHOD(CreateQuery)(D3DQUERYTYPE Type, IDirect3DQuery9** ppQuery) { return m_real->CreateQuery(Type, ppQuery); }
 };
 
+/* Forward declaration */
+class LiteGL_Direct3DDevice9Ex;
+
 /* Concrete Standard Device */
 class LiteGL_Direct3DDevice9 : public LiteGL_DeviceBase<IDirect3DDevice9> {
 public:
     LiteGL_Direct3DDevice9(IDirect3DDevice9* real) : LiteGL_DeviceBase<IDirect3DDevice9>(real) {
         log_msg("[LiteGL D3D9] LiteGL ToGL IDirect3DDevice9 created!\n");
     }
+
+    STDMETHOD(QueryInterface)(REFIID riid, void** ppvObj);
 };
 
 /* Concrete Ex Device */
@@ -584,6 +587,18 @@ class LiteGL_Direct3DDevice9Ex : public LiteGL_DeviceBase<IDirect3DDevice9Ex> {
 public:
     LiteGL_Direct3DDevice9Ex(IDirect3DDevice9Ex* real) : LiteGL_DeviceBase<IDirect3DDevice9Ex>(real) {
         log_msg("[LiteGL D3D9Ex] LiteGL ToGL IDirect3DDevice9Ex created!\n");
+    }
+
+    STDMETHOD(QueryInterface)(REFIID riid, void** ppvObj) {
+        if (!ppvObj) return E_POINTER;
+        if (IsEqualIID(riid, IID_IUnknown) ||
+            IsEqualIID(riid, IID_IDirect3DDevice9) ||
+            IsEqualIID(riid, IID_IDirect3DDevice9Ex)) {
+            *ppvObj = (IDirect3DDevice9Ex*)this;
+            this->AddRef();
+            return S_OK;
+        }
+        return this->m_real->QueryInterface(riid, ppvObj);
     }
 
     /*** IDirect3DDevice9Ex specific methods ***/
@@ -617,8 +632,29 @@ public:
         return hr;
     }
     STDMETHOD(GetDisplayModeEx)(UINT swapchain_idx, D3DDISPLAYMODEEX *mode, D3DDISPLAYROTATION *rotation) { return this->m_real->GetDisplayModeEx(swapchain_idx, mode, rotation); }
-
 };
+
+/* Implementation of LiteGL_Direct3DDevice9::QueryInterface */
+HRESULT LiteGL_Direct3DDevice9::QueryInterface(REFIID riid, void** ppvObj) {
+    if (!ppvObj) return E_POINTER;
+    if (IsEqualIID(riid, IID_IUnknown) ||
+        IsEqualIID(riid, IID_IDirect3DDevice9)) {
+        *ppvObj = (IDirect3DDevice9*)this;
+        this->AddRef();
+        return S_OK;
+    }
+    if (IsEqualIID(riid, IID_IDirect3DDevice9Ex)) {
+        IDirect3DDevice9Ex* realEx = NULL;
+        HRESULT hr = this->m_real->QueryInterface(IID_IDirect3DDevice9Ex, (void**)&realEx);
+        if (SUCCEEDED(hr) && realEx) {
+            *ppvObj = (IDirect3DDevice9Ex*)new LiteGL_Direct3DDevice9Ex(realEx);
+            log_msg("[LiteGL D3D9] QueryInterface promoted IDirect3DDevice9 -> IDirect3DDevice9Ex!\n");
+            return S_OK;
+        }
+        return E_NOINTERFACE;
+    }
+    return this->m_real->QueryInterface(riid, ppvObj);
+}
 
 /* -------------------------------------------------------------------------
  * LiteGL IDirect3D9 Implementation
@@ -631,7 +667,16 @@ public:
     LiteGL_Direct3D9(IDirect3D9* real) : m_real(real), m_ref(1) {}
 
     /*** IUnknown methods ***/
-    STDMETHOD(QueryInterface)(REFIID riid, void** ppvObj) { return m_real->QueryInterface(riid, ppvObj); }
+    STDMETHOD(QueryInterface)(REFIID riid, void** ppvObj) {
+        if (!ppvObj) return E_POINTER;
+        if (IsEqualIID(riid, IID_IUnknown) ||
+            IsEqualIID(riid, IID_IDirect3D9)) {
+            *ppvObj = (IDirect3D9*)this;
+            this->AddRef();
+            return S_OK;
+        }
+        return m_real->QueryInterface(riid, ppvObj);
+    }
     STDMETHOD_(ULONG,AddRef)(void) { return InterlockedIncrement(&m_ref); }
     STDMETHOD_(ULONG,Release)(void) {
         ULONG ref = InterlockedDecrement(&m_ref);
@@ -641,6 +686,7 @@ public:
         }
         return ref;
     }
+
 
     /*** IDirect3D9 methods ***/
     STDMETHOD(RegisterSoftwareDevice)(void* pInitializeFunction) { return m_real->RegisterSoftwareDevice(pInitializeFunction); }
@@ -701,7 +747,17 @@ public:
     }
 
     /*** IUnknown methods ***/
-    STDMETHOD(QueryInterface)(REFIID riid, void** ppvObj) { return m_realEx->QueryInterface(riid, ppvObj); }
+    STDMETHOD(QueryInterface)(REFIID riid, void** ppvObj) {
+        if (!ppvObj) return E_POINTER;
+        if (IsEqualIID(riid, IID_IUnknown) ||
+            IsEqualIID(riid, IID_IDirect3D9) ||
+            IsEqualIID(riid, IID_IDirect3D9Ex)) {
+            *ppvObj = (IDirect3D9Ex*)this;
+            this->AddRef();
+            return S_OK;
+        }
+        return m_realEx->QueryInterface(riid, ppvObj);
+    }
     STDMETHOD_(ULONG,AddRef)(void) { return InterlockedIncrement(&m_ref); }
     STDMETHOD_(ULONG,Release)(void) {
         ULONG ref = InterlockedDecrement(&m_ref);
@@ -745,8 +801,17 @@ public:
         BehaviorFlags &= ~D3DCREATE_MULTITHREADED;
         BehaviorFlags |= D3DCREATE_FPU_PRESERVE;
 
+        IDirect3DDevice9Ex* real_device_ex = NULL;
+        HRESULT hr = m_realEx->CreateDeviceEx(Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters, NULL, &real_device_ex);
+        if (SUCCEEDED(hr) && real_device_ex) {
+            real_device_ex->SetMaximumFrameLatency(1);
+            *ppReturnedDeviceInterface = (IDirect3DDevice9*)new LiteGL_Direct3DDevice9Ex(real_device_ex);
+            log_msg("[LiteGL D3D9Ex] Successfully wrapped IDirect3DDevice9Ex via CreateDeviceEx!\n");
+            return D3D_OK;
+        }
+
         IDirect3DDevice9* real_device = NULL;
-        HRESULT hr = m_realEx->CreateDevice(Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters, &real_device);
+        hr = m_realEx->CreateDevice(Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters, &real_device);
         if (FAILED(hr) || !real_device) {
             log_msg("[LiteGL D3D9Ex] m_realEx->CreateDevice failed with hr = 0x%08X\n", (unsigned int)hr);
             return hr;
@@ -756,6 +821,7 @@ public:
         log_msg("[LiteGL D3D9Ex] Wrapped IDirect3DDevice9 successfully with LiteGL ToGL Accelerator!\n");
         return D3D_OK;
     }
+
 
     /*** IDirect3D9Ex methods ***/
     STDMETHOD_(UINT, GetAdapterModeCountEx)(UINT Adapter, const D3DDISPLAYMODEFILTER *filter) { return m_realEx->GetAdapterModeCountEx(Adapter, filter); }
