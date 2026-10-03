@@ -1,0 +1,102 @@
+name: LiteGL CI Build & Tests
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    name: Linux (Ubuntu) - GCC & Clang
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        compiler: [gcc, clang]
+        build_type: [Release, Debug]
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl2-dev libgl-dev cmake ninja-build xvfb
+
+      - name: Configure CMake
+        run: |
+          if [ "${{ matrix.compiler }}" = "clang" ]; then
+            export CC=clang CXX=clang++
+          else
+            export CC=gcc CXX=g++
+          fi
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DLITEGL_BUILD_TESTS=ON \
+            -DLITEGL_BUILD_EXAMPLES=ON
+
+      - name: Build LiteGL
+        run: |
+          cmake --build build --config ${{ matrix.build_type }}
+
+      - name: Run Unit Tests
+        run: |
+          ctest --test-dir build --output-on-failure
+
+      - name: Run Benchmark in Virtual Framebuffer (Xvfb)
+        run: |
+          xvfb-run -s "-screen 0 1024x768x24" ./build/bench_compare --frames 50
+
+  build-windows:
+    name: Windows - MSVC
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        build_type: [Release]
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure CMake
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DLITEGL_BUILD_TESTS=ON \
+            -DLITEGL_BUILD_EXAMPLES=OFF
+
+      - name: Build LiteGL
+        run: |
+          cmake --build build --config ${{ matrix.build_type }}
+
+      - name: Run Unit Tests
+        run: |
+          ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
+
+  build-macos:
+    name: macOS - AppleClang
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        build_type: [Release]
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure CMake
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DLITEGL_BUILD_TESTS=ON \
+            -DLITEGL_BUILD_EXAMPLES=OFF
+
+      - name: Build LiteGL
+        run: |
+          cmake --build build --config ${{ matrix.build_type }}
+
+      - name: Run Unit Tests
+        run: |
+          ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
