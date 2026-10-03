@@ -14,6 +14,7 @@ set(LITEGL_SOURCES
     src/litegl_core.c
     src/litegl_state.c
     src/litegl_buffer.c
+    src/litegl_batch.c
     src/litegl_gl_loader.c
 )
 

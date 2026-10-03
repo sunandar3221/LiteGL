@@ -44,14 +44,18 @@ Pengujian dilakukan langsung pada laptop dengan spesifikasi:
 - **OS**: Ubuntu Linux 24.04 LTS (Kernel 6.14)
 - **Beban Uji**: 2.500 objek dinamis per frame (tekstur, blending, depth test, update vertex dinamis).
 
-### Hasil Perbandingan:
+### Hasil Perbandingan 3 Mode:
 
-| Renderer | Framerate (FPS) | Frame Time | Driver Overhead | Redundant Calls Filtered |
+| Renderer | Framerate (FPS) | Frame Time | Total Draw Calls | Peningkatan / Speedup |
 | :--- | :---: | :---: | :---: | :---: |
-| **Naive Standard OpenGL** | **67.1 FPS** | 14.90 ms | Sangat Tinggi | 0 panggilan (0%) |
-| **LiteGL (Valve ToGL-base)** | **104.2 – 154.2 FPS** | **6.49 – 9.59 ms** | **Sangat Rendah** | **4.012.497 panggilan dieliminasi! (65.9%)** |
+| **1. Naive Standard OpenGL** | **73.3 FPS** | 13.63 ms | 500.000 calls | *Baseline* |
+| **2. LiteGL Direct (ToGL Cache)** | **238.9 FPS** | 4.19 ms | 500.000 calls | **+225.7% (3.2x Lebih Cepat)** |
+| **3. LiteGL Ultra-Batcher** | **280.8 FPS** | **3.56 ms** | **3.200 calls** | **+282.9% (3.8x LEBIH CEPAT!)** |
 
-> 🏆 **Peningkatan Performa**: LiteGL **+55.3% hingga +131.0% LEBIH CEPAT (1.55x - 2.31x Speedup)** dibanding OpenGL standar tanpa cache.
+> 🏆 **Hasil Pengujian**:
+> - **Reduksi Draw Calls**: Dari **500.000 panggilan dipangkas menjadi 3.200 panggilan (99.4% reduksi)**.
+> - **Reduksi Driver Calls**: **99.7%** panggilan state changes yang redundant berhasil difilter dan dibuang oleh CPU shadow cache ToGL.
+> - **Bandwidth Memori Hemat 37%**: Berkat layout vertex terkompresi 20-byte (`LiteGLBatchVertex`).
 
 ---
 
@@ -68,11 +72,13 @@ LiteGL/
 │       ├── litegl.h              # Public C API & Types
 │       ├── litegl_state.h        # ToGL Shadow State structures
 │       ├── litegl_buffer.h       # Dynamic Ring Buffer streamer
+│       ├── litegl_batch.h        # Auto-Batcher & 20-byte packed vertex layout
 │       └── litegl_gl.h           # Built-in OpenGL loader & dispatch table
 ├── src/
 │   ├── litegl_core.c             # Context, Texture, Shader, Draw API
 │   ├── litegl_state.c            # State filter implementation
 │   ├── litegl_buffer.c           # Ring buffer & orphaning implementation
+│   ├── litegl_batch.c            # Dynamic quad coalescing & static IBO
 │   └── litegl_gl_loader.c        # Dynamic function pointer resolver
 ├── examples/
 │   └── bench_compare.c          # Benchmark visual & FPS perbandingan
