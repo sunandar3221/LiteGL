@@ -935,7 +935,7 @@ public:
  * ------------------------------------------------------------------------- */
 extern "C" {
 
-__declspec(dllexport) IDirect3D9* WINAPI Direct3DCreate9(UINT SDKVersion) {
+IDirect3D9* WINAPI Direct3DCreate9(UINT SDKVersion) {
     if (!load_system_d3d9() || !g_real_Direct3DCreate9) {
         return NULL;
     }
@@ -954,7 +954,7 @@ __declspec(dllexport) IDirect3D9* WINAPI Direct3DCreate9(UINT SDKVersion) {
     return new LiteGL_Direct3D9(real_d3d);
 }
 
-__declspec(dllexport) HRESULT WINAPI Direct3DCreate9Ex(UINT SDKVersion, IDirect3D9Ex** ppD3D) {
+HRESULT WINAPI Direct3DCreate9Ex(UINT SDKVersion, IDirect3D9Ex** ppD3D) {
     if (!load_system_d3d9() || !g_real_Direct3DCreate9Ex) {
         return D3DERR_NOTAVAILABLE;
     }
@@ -976,32 +976,32 @@ __declspec(dllexport) HRESULT WINAPI Direct3DCreate9Ex(UINT SDKVersion, IDirect3
     return hr;
 }
 
-__declspec(dllexport) int WINAPI D3DPERF_BeginEvent(D3DCOLOR col, LPCWSTR wszName) {
+int WINAPI D3DPERF_BeginEvent(D3DCOLOR col, LPCWSTR wszName) {
     (void)col; (void)wszName;
     return 0;
 }
 
-__declspec(dllexport) int WINAPI D3DPERF_EndEvent(void) {
+int WINAPI D3DPERF_EndEvent(void) {
     return 0;
 }
 
-__declspec(dllexport) void WINAPI D3DPERF_SetMarker(D3DCOLOR col, LPCWSTR wszName) {
+void WINAPI D3DPERF_SetMarker(D3DCOLOR col, LPCWSTR wszName) {
     (void)col; (void)wszName;
 }
 
-__declspec(dllexport) void WINAPI D3DPERF_SetRegion(D3DCOLOR col, LPCWSTR wszName) {
+void WINAPI D3DPERF_SetRegion(D3DCOLOR col, LPCWSTR wszName) {
     (void)col; (void)wszName;
 }
 
-__declspec(dllexport) BOOL WINAPI D3DPERF_QueryRepeatFrame(void) {
+BOOL WINAPI D3DPERF_QueryRepeatFrame(void) {
     return FALSE;
 }
 
-__declspec(dllexport) void WINAPI D3DPERF_SetOptions(DWORD dwOptions) {
+void WINAPI D3DPERF_SetOptions(DWORD dwOptions) {
     (void)dwOptions;
 }
 
-__declspec(dllexport) DWORD WINAPI D3DPERF_GetStatus(void) {
+DWORD WINAPI D3DPERF_GetStatus(void) {
     return 0;
 }
 
